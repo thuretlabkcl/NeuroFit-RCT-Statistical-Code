@@ -1,0 +1,246 @@
+---
+title: "Farmand et al 2026 - NeuroFit RCT Neurogenesis Proliferation Analysis Examples"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(glmmTMB)
+library(nlme)
+library(DHARMa)
+library(emmeans)
+library(ggplot2)
+```
+
+## 1. Import dataset
+
+```{r import-data}
+PDF <- read_excel("Farmand et al - NeuroFit_RCT_Neurogenesis_Dataframe_Proliferation_ITT_Population.xlsx")
+```
+
+## 2. Prepare variables
+
+```{r prepare-data}
+PDF <- PDF %>%
+  mutate(
+    Intervention_group = factor(
+      Intervention_group,
+      levels = c(0, 1),
+      labels = c("Control", "Exercise")
+    ),
+    Time_point = factor(Time_point, levels = c("A", "B")),
+    Batch_number = as.factor(Batch_number),
+    ID = as.factor(ID)
+  )
+```
+
+## 3. Convert percentage outcomes for beta regression
+
+Proliferation markers were analysed using beta GLMMs. Percentage values were divided by 100 to place them on a 0–1 scale.
+
+```{r beta-transform}
+PDF <- PDF %>%
+  mutate(
+    KI67 = KI67 / 100,
+    CC3 = CC3 / 100,
+    Sox2 = Sox2 / 100,
+    Nestin = Nestin / 100
+  )
+```
+
+## 4. Create baseline covariates
+
+```{r baseline-covariates}
+PDF <- PDF %>%
+  group_by(ID) %>%
+  mutate(
+    Baseline_KI67 = KI67[Time_point == "A"],
+    Baseline_CC3 = CC3[Time_point == "A"],
+    Baseline_Sox2 = Sox2[Time_point == "A"],
+    Baseline_Nestin = Nestin[Time_point == "A"],
+    Baseline_Cell_Count = Cell_Count[Time_point == "A"]
+  ) %>%
+  ungroup()
+```
+
+## 5. Neurogenesis proliferation outcomes
+
+Beta GLMM outcomes:
+
+```{r beta-outcomes}
+beta_outcomes <- c("KI67", "CC3", "Sox2", "Nestin")
+```
+
+Linear mixed-effects model outcome:
+
+```{r lme-outcomes}
+lme_outcomes <- c("Cell_Count")
+```
+
+## 6. Example beta GLMM
+
+The following model illustrates the beta GLMM used for proportional cellular marker outcomes. The same model structure was applied to CC3, Sox2 and Nestin by replacing the dependent variable and corresponding baseline covariate.
+
+```{r beta-glmm-example}
+Clean_KI67 <- PDF %>%
+  select(
+    ID,
+    Time_point,
+    KI67,
+    Baseline_KI67,
+    Batch_number,
+    Intervention_group
+  ) %>%
+  na.omit()
+
+m_KI67 <- glmmTMB(
+  KI67 ~ Intervention_group * Time_point + Baseline_KI67 + Batch_number +
+    (1 | ID),
+  data = Clean_KI67,
+  family = beta_family(link = "logit"),
+  REML = FALSE
+)
+
+summary(m_KI67)
+confint(m_KI67, parm = "beta_", level = 0.95, method = "Wald")
+```
+
+## 7. Beta GLMM diagnostics
+
+```{r beta-diagnostics}
+sim_KI67 <- simulateResiduals(m_KI67)
+
+plot(sim_KI67)
+testDispersion(sim_KI67)
+testUniformity(sim_KI67)
+testOutliers(sim_KI67)
+```
+
+## 8. Example linear mixed-effects model for cell count
+
+Cell count was analysed using a linear mixed-effects model.
+
+```{r lme-example}
+Clean_Cell_Count <- PDF %>%
+  select(
+    ID,
+    Time_point,
+    Cell_Count,
+    Baseline_Cell_Count,
+    Batch_number,
+    Intervention_group
+  ) %>%
+  na.omit()
+
+m_Cell_Count <- lme(
+  Cell_Count ~ Intervention_group * Time_point + Baseline_Cell_Count + Batch_number,
+  random = ~ 1 | ID,
+  data = Clean_Cell_Count,
+  na.action = na.exclude
+)
+
+summary(m_Cell_Count)
+intervals(m_Cell_Count)
+```
+
+## 9. LME diagnostics
+
+```{r lme-diagnostics}
+res_Cell_Count <- resid(m_Cell_Count, type = "normalized")
+fit_Cell_Count <- fitted(m_Cell_Count)
+
+plot(
+  fit_Cell_Count,
+  res_Cell_Count,
+  xlab = "Fitted values",
+  ylab = "Normalised residuals"
+)
+abline(h = 0, lty = 2)
+
+qqnorm(res_Cell_Count)
+qqline(res_Cell_Count)
+
+hist(
+  res_Cell_Count,
+  main = "Residuals histogram",
+  xlab = "Normalised residuals"
+)
+```
+
+## 10. Estimated marginal means
+
+```{r emmeans}
+KI67_emm <- emmeans(m_KI67, ~ Intervention_group * Time_point)
+
+KI67_emm_summary <- summary(
+  KI67_emm,
+  infer = TRUE,
+  type = "response"
+)
+
+KI67_emm_summary
+```
+
+## 11. Back-transform beta-regression estimates
+
+For percentage-based outcomes, beta-regression estimated marginal means were multiplied by 100 to return values to the original percentage scale.
+
+```{r back-transform}
+KI67_emm_percent <- as.data.frame(KI67_emm_summary) %>%
+  mutate(
+    Mean = response * 100,
+    Lower95 = asymp.LCL * 100,
+    Upper95 = asymp.UCL * 100,
+    Mean_CI = sprintf("%.2f [%.2f, %.2f]", Mean, Lower95, Upper95),
+    Time = recode(Time_point, A = "Baseline", B = "Endpoint")
+  ) %>%
+  select(
+    Group = Intervention_group,
+    Time,
+    Mean,
+    Lower95,
+    Upper95,
+    Mean_CI
+  )
+
+KI67_emm_percent
+```
+
+## 12. Example estimated marginal means plot
+
+```{r emm-plot}
+plot_df <- as.data.frame(KI67_emm_summary) %>%
+  mutate(
+    fit_percent = response * 100,
+    ymin_percent = asymp.LCL * 100,
+    ymax_percent = asymp.UCL * 100,
+    Time_point = factor(Time_point, levels = c("A", "B")),
+    Intervention_group = factor(
+      Intervention_group,
+      levels = c("Control", "Exercise")
+    )
+  )
+
+ggplot(plot_df, aes(x = Time_point, y = fit_percent, group = Intervention_group)) +
+  geom_point(aes(colour = Intervention_group), size = 2) +
+  geom_line(aes(colour = Intervention_group), linewidth = 0.25) +
+  geom_ribbon(
+    aes(ymin = ymin_percent, ymax = ymax_percent, fill = Intervention_group),
+    alpha = 0.2
+  ) +
+  scale_x_discrete(labels = c("A" = "Baseline", "B" = "Endpoint")) +
+  labs(
+    x = "Time point",
+    y = "KI67-positive cells (%)",
+    colour = "Intervention group",
+    fill = "Intervention group"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```

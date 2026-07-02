@@ -1,0 +1,279 @@
+---
+title: "Farmand et al 2026 - NeuroFit RCT Clinical and Cognitive Outcomes Analysis Examples"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(glmmTMB)
+library(nlme)
+library(ordinal)
+library(DHARMa)
+library(emmeans)
+library(ggplot2)
+```
+
+## 1. Import dataset
+
+```{r import-data}
+df <- read_excel("Farmand et al - NeuroFit_RCT_Clinical_Cognitive_Dataframe_ITT_Population.xlsx")
+```
+
+## 2. Reshape data to long format
+
+```{r reshape-data}
+ldat <- df %>%
+  pivot_longer(
+    cols = starts_with(c("A_", "B_")),
+    names_to = c("time", ".value"),
+    names_sep = "_"
+  ) %>%
+  mutate(
+    Participant_ID = as.factor(Participant_ID),
+    Intervention_group = factor(
+      Intervention_group,
+      levels = c(0, 1),
+      labels = c("Control", "Exercise")
+    ),
+    time = factor(time, levels = c("A", "B")),
+    Sex = as.factor(Sex),
+    Education = as.factor(Education)
+  )
+```
+
+## 3. Create baseline covariates
+
+```{r baseline-covariates}
+ldat <- ldat %>%
+  group_by(Participant_ID) %>%
+  mutate(
+    baselineLDI = LDI[time == "A"],
+    baselineREC = REC[time == "A"],
+    baselineMCS12 = MCS12[time == "A"],
+    baselinePCS12 = PCS12[time == "A"],
+    baselinePHQ9 = PHQ9[time == "A"],
+    baselineMOCA = MOCA[time == "A"],
+    baselinePSQI = PSQI[time == "A"],
+    baselineBMI = BMI[time == "A"],
+    baselineBF = BF[time == "A"],
+    baselineHR = HR[time == "A"],
+    baselineFit = Fit[time == "A"],
+    baselineSysBP = SysBP[time == "A"],
+    baselineDiaBP = DiaBP[time == "A"],
+    baselineWeight = Weight[time == "A"],
+    baselineWtH = WtH[time == "A"]
+  ) %>%
+  ungroup()
+```
+
+## 4. Transform variables for beta regression
+
+Beta regression was used for bounded continuous outcomes. Variables were min-max normalised to lie between 0 and 1, with a small epsilon adjustment to avoid exact 0 or 1 values.
+
+Beta regression outcomes:
+
+```{r beta-outcomes}
+beta_outcomes <- c("LDI", "REC", "MCS12", "PCS12", "PHQ9", "BF")
+```
+
+```{r beta-transformation}
+epsilon <- 1e-5
+
+normalize_beta <- function(x) {
+  min_val <- min(x, na.rm = TRUE)
+  max_val <- max(x, na.rm = TRUE)
+
+  scaled <- (x - min_val) / (max_val - min_val)
+  adjusted <- scaled * (1 - 2 * epsilon) + epsilon
+
+  return(adjusted)
+}
+
+ldat <- ldat %>%
+  mutate(across(
+    all_of(beta_outcomes),
+    normalize_beta,
+    .names = "n{col}"
+  ))
+```
+
+## 5. Example beta GLMM
+
+The following model illustrates the beta GLMM approach. The same model structure was applied to other beta-regression outcomes by replacing the dependent variable and corresponding baseline covariate.
+
+```{r beta-glmm-example}
+m_LDI <- glmmTMB(
+  nLDI ~ Intervention_group * time + Sex + Age + Education + baselineLDI +
+    (1 | Participant_ID),
+  data = ldat,
+  family = beta_family(link = "logit"),
+  REML = FALSE
+)
+
+summary(m_LDI)
+confint(m_LDI, parm = "beta_", level = 0.95, method = "Wald")
+```
+
+## 6. Beta GLMM diagnostics
+
+```{r beta-diagnostics}
+sim_LDI <- simulateResiduals(m_LDI)
+
+plot(sim_LDI)
+testDispersion(sim_LDI)
+testUniformity(sim_LDI)
+testOutliers(sim_LDI)
+```
+
+## 7. Example linear mixed-effects model
+
+Linear mixed-effects models were used for normally distributed continuous outcomes.
+
+LME outcomes:
+
+```{r lme-outcomes}
+lme_outcomes <- c(
+  "MOCA", "BMI", "HR", "SysBP", "DiaBP",
+  "Fit", "PSQI", "Weight", "WtH"
+)
+```
+
+Example model using MOCA:
+
+```{r lme-example}
+m_MOCA <- lme(
+  MOCA ~ Intervention_group * time + Sex + Age + baselineMOCA + Education,
+  random = ~ 1 | Participant_ID,
+  data = ldat,
+  na.action = na.exclude
+)
+
+summary(m_MOCA)
+intervals(m_MOCA)
+```
+
+## 8. LME diagnostics
+
+```{r lme-diagnostics}
+res_MOCA <- resid(m_MOCA, type = "normalized")
+fit_MOCA <- fitted(m_MOCA)
+
+plot(fit_MOCA, res_MOCA,
+     xlab = "Fitted values",
+     ylab = "Normalised residuals")
+abline(h = 0, lty = 2)
+
+qqnorm(res_MOCA)
+qqline(res_MOCA)
+
+hist(res_MOCA, main = "Residuals histogram", xlab = "Normalised residuals")
+```
+
+## 9. Ordinal mixed model for IPAQ
+
+IPAQ was analysed using a cumulative link mixed model because it was an ordered categorical variable.
+
+```{r ipaq-model}
+ldat <- ldat %>%
+  mutate(
+    IPAQ = factor(IPAQ, levels = c(0, 1, 2), ordered = TRUE),
+    time = factor(time, levels = c("A", "B"))
+  )
+
+m_IPAQ <- clmm(
+  IPAQ ~ Intervention_group * time + Sex + Age + Education +
+    (1 | Participant_ID),
+  data = ldat,
+  link = "logit",
+  Hess = TRUE
+)
+
+summary(m_IPAQ)
+```
+
+## 10. Estimated marginal means
+
+Estimated marginal means were calculated using `emmeans`. The following example uses the LDI beta GLMM.
+
+```{r emmeans-example}
+LDI_emm <- emmeans(m_LDI, ~ Intervention_group * time)
+
+LDI_emm_summary <- summary(
+  LDI_emm,
+  infer = TRUE,
+  type = "response"
+)
+
+LDI_emm_summary
+```
+
+## 11. Back-transform beta-regression estimates
+
+For beta-regression outcomes, estimated marginal means were back-transformed to the original outcome scale.
+
+```{r back-transform-beta}
+min_LDI <- min(ldat$LDI, na.rm = TRUE)
+max_LDI <- max(ldat$LDI, na.rm = TRUE)
+
+back_transform_LDI <- function(z) {
+  ((z - epsilon) / (1 - 2 * epsilon)) * (max_LDI - min_LDI) + min_LDI
+}
+
+LDI_emm_raw <- as.data.frame(LDI_emm_summary) %>%
+  mutate(
+    Mean = back_transform_LDI(response),
+    Lower95 = back_transform_LDI(asymp.LCL),
+    Upper95 = back_transform_LDI(asymp.UCL),
+    Mean_CI = sprintf("%.2f [%.2f, %.2f]", Mean, Lower95, Upper95),
+    Time = recode(time, A = "Baseline", B = "Endpoint")
+  ) %>%
+  select(
+    Group = Intervention_group,
+    Time,
+    Mean,
+    Lower95,
+    Upper95,
+    Mean_CI
+  )
+
+LDI_emm_raw
+```
+
+## 12. Example estimated marginal means plot
+
+```{r emm-plot}
+plot_df <- as.data.frame(LDI_emm_summary) %>%
+  mutate(
+    fit_orig = back_transform_LDI(response),
+    ymin_orig = back_transform_LDI(asymp.LCL),
+    ymax_orig = back_transform_LDI(asymp.UCL),
+    time = factor(time, levels = c("A", "B")),
+    Intervention_group = factor(
+      Intervention_group,
+      levels = c("Control", "Exercise")
+    )
+  )
+
+ggplot(plot_df, aes(x = time, y = fit_orig, group = Intervention_group)) +
+  geom_point(aes(colour = Intervention_group), size = 2) +
+  geom_line(aes(colour = Intervention_group), linewidth = 0.25) +
+  geom_ribbon(
+    aes(ymin = ymin_orig, ymax = ymax_orig, fill = Intervention_group),
+    alpha = 0.2
+  ) +
+  scale_x_discrete(labels = c("A" = "Baseline", "B" = "Endpoint")) +
+  labs(
+    x = "Time point",
+    y = "LDI",
+    colour = "Intervention group",
+    fill = "Intervention group"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```

@@ -1,0 +1,149 @@
+---
+title: "Farmand et al 2026 - NeuroFit RCT Blood-Based Biomarker Analysis Examples"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(nlme)
+library(emmeans)
+library(ggplot2)
+```
+
+## 1. Import dataset
+
+```{r import-data}
+df <- read_excel("Farmand et al - NeuroFit_RCT_Blood_Based_BioMarkers_Dataframe_ITT_Population.xlsx")
+```
+
+## 2. Reshape data to long format
+
+```{r reshape-data}
+ldat <- df %>%
+  pivot_longer(
+    cols = starts_with(c("A_", "B_")),
+    names_to = c("time", ".value"),
+    names_sep = "_"
+  ) %>%
+  mutate(
+    Participant_ID = as.factor(Participant_ID),
+    Intervention_group = factor(
+      Intervention_group,
+      levels = c(0, 1),
+      labels = c("Control", "Exercise")
+    ),
+    time = factor(time, levels = c("A", "B")),
+    Sex = as.factor(Sex),
+    Education = as.factor(Education)
+  )
+```
+
+## 3. Create baseline covariates
+
+```{r baseline-covariates}
+ldat <- ldat %>%
+  group_by(Participant_ID) %>%
+  mutate(
+    baselineKlo = Klo[time == "A"],
+    baselineCLU = CLU[time == "A"],
+    baselineBDNF = BDNF[time == "A"]
+  ) %>%
+  ungroup()
+```
+
+## 4. Blood-based biomarker outcomes
+
+Linear mixed-effects models were used for the blood-based biomarker outcomes.
+
+```{r biomarker-outcomes}
+biomarker_outcomes <- c("Klo", "CLU", "BDNF")
+```
+
+## 5. Example linear mixed-effects model
+
+The following model illustrates the linear mixed-effects model used for blood-based biomarker outcomes. The same model structure was applied to the other biomarker outcomes by replacing the dependent variable and corresponding baseline covariate.
+
+```{r lme-example}
+m_Klo <- lme(
+  Klo ~ Intervention_group * time + Sex + Age + baselineKlo + Education,
+  random = ~ 1 | Participant_ID,
+  data = ldat,
+  na.action = na.exclude
+)
+
+summary(m_Klo)
+intervals(m_Klo)
+```
+
+## 6. Model diagnostics
+
+```{r lme-diagnostics}
+res_Klo <- resid(m_Klo, type = "normalized")
+fit_Klo <- fitted(m_Klo)
+
+plot(
+  fit_Klo,
+  res_Klo,
+  xlab = "Fitted values",
+  ylab = "Normalised residuals"
+)
+abline(h = 0, lty = 2)
+
+qqnorm(res_Klo)
+qqline(res_Klo)
+
+hist(
+  res_Klo,
+  main = "Residuals histogram",
+  xlab = "Normalised residuals"
+)
+```
+
+## 7. Estimated marginal means
+
+```{r emmeans}
+Klo_emm <- emmeans(m_Klo, ~ Intervention_group * time)
+
+Klo_emm_summary <- summary(
+  Klo_emm,
+  infer = TRUE
+)
+
+Klo_emm_summary
+```
+
+## 8. Estimated marginal means plot
+
+```{r emm-plot}
+plot_df <- as.data.frame(Klo_emm_summary) %>%
+  mutate(
+    time = factor(time, levels = c("A", "B")),
+    Intervention_group = factor(
+      Intervention_group,
+      levels = c("Control", "Exercise")
+    )
+  )
+
+ggplot(plot_df, aes(x = time, y = emmean, group = Intervention_group)) +
+  geom_point(aes(colour = Intervention_group), size = 2) +
+  geom_line(aes(colour = Intervention_group), linewidth = 0.25) +
+  geom_ribbon(
+    aes(ymin = lower.CL, ymax = upper.CL, fill = Intervention_group),
+    alpha = 0.2
+  ) +
+  scale_x_discrete(labels = c("A" = "Baseline", "B" = "Endpoint")) +
+  labs(
+    x = "Time point",
+    y = "Klotho",
+    colour = "Intervention group",
+    fill = "Intervention group"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
