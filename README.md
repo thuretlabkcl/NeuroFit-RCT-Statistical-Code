@@ -4,7 +4,7 @@
 
 This repository accompanies the manuscript:
 
-**Effects of a three-month exercise programme on cognition, mood and neurogenesis: the NeuroFit randomised controlled trial**
+**Farmand et al. 2026 - Effects of a three-month exercise programme on cognition, mood and neurogenesis: the NeuroFit randomised controlled trial**
 
 It contains representative R Markdown scripts illustrating the statistical analyses performed in the study.
 
